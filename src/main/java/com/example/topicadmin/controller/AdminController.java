@@ -13,6 +13,7 @@ import com.example.topicadmin.dto.Dtos.UpdateRetentionRequest;
 import com.example.topicadmin.service.ConsumerGroupService;
 import com.example.topicadmin.service.DeadLetterService;
 import com.example.topicadmin.service.TopicAdminService;
+import com.example.topicadmin.service.TopicEnsurer;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -34,8 +35,11 @@ public class AdminController {
     private final TopicAdminService topics;
     private final ConsumerGroupService groups;
     private final DeadLetterService dlt;
+    private final TopicEnsurer ensurer;
 
-    public AdminController(TopicAdminService topics, ConsumerGroupService groups, DeadLetterService dlt) {
+    public AdminController(TopicAdminService topics, ConsumerGroupService groups, DeadLetterService dlt,
+                           TopicEnsurer ensurer) {
+        this.ensurer = ensurer;
         this.topics = topics;
         this.groups = groups;
         this.dlt = dlt;
@@ -56,6 +60,14 @@ public class AdminController {
                                 @PathVariable String name) {
         AuthContext.requireAdmin(userId, role);
         return topics.get(name);
+    }
+
+    /** Crea los topicos configurados que falten (por si el cluster se levanto despues que este servicio). */
+    @PostMapping("/topics/ensure")
+    public List<String> ensureTopics(@RequestHeader(value = AuthContext.USER_ID_HEADER, required = false) String userId,
+                                     @RequestHeader(value = AuthContext.ROLE_HEADER, required = false) String role) {
+        AuthContext.requireAdmin(userId, role);
+        return ensurer.ensure();
     }
 
     @PatchMapping("/topics/{name}/retention")

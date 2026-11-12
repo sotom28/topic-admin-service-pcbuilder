@@ -33,6 +33,8 @@ import java.util.concurrent.ExecutionException;
 public class DeadLetterService {
 
     private static final String DLT_SUFFIX = ".dlt";
+    /** Tiempo maximo para leer un DLT en una sola peticion. */
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(15);
 
     private final Admin admin;
     private final Map<String, Object> connection;
@@ -47,6 +49,7 @@ public class DeadLetterService {
         requireDlt(dltTopic);
         int max = Math.min(Math.max(limit, 1), 200);
         List<DltRecord> out = new ArrayList<>();
+        long deadline = System.nanoTime() + READ_TIMEOUT.toNanos(); // sin esto un tramo sin registros dejaria el bucle girando
         try (KafkaConsumer<String, String> consumer = consumer()) {
             List<TopicPartition> parts = partitions(consumer, dltTopic);
             consumer.assign(parts);
@@ -55,7 +58,7 @@ public class DeadLetterService {
             for (TopicPartition tp : parts) {
                 long end = ends.get(tp);
                 int taken = 0;
-                while (consumer.position(tp) < end && taken < max) {
+                while (consumer.position(tp) < end && taken < max && System.nanoTime() < deadline) {
                     for (ConsumerRecord<String, String> r : consumer.poll(Duration.ofSeconds(2)).records(tp)) {
                         if (taken++ < max) {
                             out.add(toDto(r));

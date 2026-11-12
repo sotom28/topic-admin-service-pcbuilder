@@ -23,8 +23,10 @@ import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 @Service
@@ -47,25 +49,40 @@ public class ConsumerGroupService {
                 .sorted(Comparator.comparing(GroupSummary::groupId)).toList();
     }
 
-    /** Lag = último offset del tópico - offset confirmado por el grupo, por partición. */
+    /**
+     * Lag = ultimo offset del topico - offset confirmado por el grupo, por particion. Incluye tambien las particiones
+     * asignadas a algun consumidor que todavia no confirmaron nada (grupo nuevo): ahi el lag se mide desde el inicio del
+     * topico; si no, un grupo que aun no leyo nada apareceria con lag 0.
+     */
     public GroupLag lag(String groupId) {
         ConsumerGroupDescription desc = describe(groupId);
         Map<TopicPartition, OffsetAndMetadata> committed =
                 KafkaCalls.await(admin.listConsumerGroupOffsets(groupId).partitionsToOffsetAndMetadata());
-        Map<TopicPartition, ListOffsetsResultInfo> ends = committed.isEmpty() ? Map.of()
-                : KafkaCalls.await(admin.listOffsets(toSpec(committed.keySet(), OffsetSpec.latest())).all());
-
-        List<PartitionLag> partitions = committed.entrySet().stream()
-                .filter(e -> e.getValue() != null)
-                .map(e -> {
-                    long end = ends.get(e.getKey()).offset();
-                    long done = e.getValue().offset();
-                    return new PartitionLag(e.getKey().topic(), e.getKey().partition(), done, end, Math.max(0, end - done));
-                })
-                .sorted(Comparator.comparing(PartitionLag::topic).thenComparingInt(PartitionLag::partition))
-                .toList();
-        long total = partitions.stream().mapToLong(PartitionLag::lag).sum();
+        Set<TopicPartition> all = new HashSet<>(committed.keySet());
+        desc.members().forEach(m -> all.addAll(m.assignment().topicPartitions()));
         List<MemberDto> members = desc.members().stream().map(ConsumerGroupService::member).toList();
+        if (all.isEmpty()) {
+            return new GroupLag(groupId, state(desc), 0, members, List.of());
+        }
+
+        Map<TopicPartition, ListOffsetsResultInfo> ends =
+                KafkaCalls.await(admin.listOffsets(toSpec(all, OffsetSpec.latest())).all());
+        Set<TopicPartition> uncommitted = new HashSet<>();
+        all.forEach(tp -> {
+            if (committed.get(tp) == null) {
+                uncommitted.add(tp);
+            }
+        });
+        Map<TopicPartition, ListOffsetsResultInfo> starts = uncommitted.isEmpty() ? Map.of()
+                : KafkaCalls.await(admin.listOffsets(toSpec(uncommitted, OffsetSpec.earliest())).all());
+
+        List<PartitionLag> partitions = all.stream().map(tp -> {
+            long end = ends.get(tp).offset();
+            OffsetAndMetadata commit = committed.get(tp);
+            long done = commit != null ? commit.offset() : starts.get(tp).offset();
+            return new PartitionLag(tp.topic(), tp.partition(), done, end, Math.max(0, end - done));
+        }).sorted(Comparator.comparing(PartitionLag::topic).thenComparingInt(PartitionLag::partition)).toList();
+        long total = partitions.stream().mapToLong(PartitionLag::lag).sum();
         return new GroupLag(groupId, state(desc), total, members, partitions);
     }
 
