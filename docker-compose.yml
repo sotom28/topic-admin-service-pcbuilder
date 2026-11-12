@@ -1,0 +1,25 @@
+# topic-admin-service: no tiene base de datos; solo necesita el clúster Kafka (kafka-local) arriba.
+#   1) en kafka-local:            docker compose up -d
+#   2) en topic-admin-service:    docker compose up -d --build
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: "8092"
+      # Listener interno de los brokers (dentro de la red pcb-kafka-net).
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP:-kafka1:29092,kafka2:29092,kafka3:29092}
+    ports:
+      - "${SERVER_PORT:-8092}:8092"
+    networks:
+      - pcb-kafka-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8092/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+networks:
+  pcb-kafka-net:
+    external: true   # la crea kafka-local/docker-compose.yml
